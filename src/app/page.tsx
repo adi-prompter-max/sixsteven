@@ -12,19 +12,29 @@ const VALID_WORDS = [
   "aptos", "kaspa", "fetch", "ondo", "pyth", "axie", "polyx",
   "nano", "qtum", "coti", "iotx", "waxp", "klay", "egld",
   "celo", "flux", "velo", "ankr", "arpa", "band", "bake",
-  "reef", "rose", "scrt", "storj", "steem", "tfuel", "vet",
-  "zilqa", "audio", "bico",
+  "reef", "rose", "scrt", "storj", "steem", "tfuel",
+  "audio", "bico",
 ].filter((w) => w.length >= 4 && w.length <= 6);
 
 const TRICK_WORD = "six";
 const TRICK_ANSWER = "steven";
-const INITIAL_TIME = 4000;
-const TIME_DECREASE = 250;
-const MIN_TIME = 1000;
+const INITIAL_TIME = 4500;
+const TIME_DECREASE = 200;
+const MIN_TIME = 1200;
 const MAX_LIVES = 3;
 const TRICK_CHANCE = 0.2;
 
 type GameScreen = "home" | "playing" | "gameover";
+
+interface Particle {
+  id: number;
+  x: number;
+  y: number;
+  angle: number;
+  speed: number;
+  color: string;
+  size: number;
+}
 
 function getRandomWord() {
   if (Math.random() < TRICK_CHANCE) return TRICK_WORD;
@@ -34,6 +44,8 @@ function getRandomWord() {
 function getTimeDuration(score: number) {
   return Math.max(MIN_TIME, INITIAL_TIME - score * TIME_DECREASE);
 }
+
+const PARTICLE_COLORS = ["#4ade80", "#22c55e", "#86efac", "#f5c542", "#fbbf24", "#a3e635"];
 
 export default function Home() {
   const [screen, setScreen] = useState<GameScreen>("home");
@@ -45,6 +57,16 @@ export default function Home() {
   const [progress, setProgress] = useState(1);
   const [shaking, setShaking] = useState(false);
 
+  // Hit animation states
+  const [flashing, setFlashing] = useState(false);
+  const [scorePop, setScorePop] = useState(false);
+  const [floats, setFloats] = useState<{ id: number; text: string }[]>([]);
+  const [wordSlam, setWordSlam] = useState(false);
+  const [particles, setParticles] = useState<Particle[]>([]);
+  const [streak, setStreak] = useState(0);
+  const [screenPulse, setScreenPulse] = useState(false);
+  const [showCombo, setShowCombo] = useState(false);
+
   const inputRef = useRef<HTMLInputElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -52,10 +74,13 @@ export default function Home() {
   const durationRef = useRef(INITIAL_TIME);
   const scoreRef = useRef(0);
   const livesRef = useRef(MAX_LIVES);
+  const streakRef = useRef(0);
+  const floatIdRef = useRef(0);
+  const particleIdRef = useRef(0);
 
-  // Keep refs in sync
   scoreRef.current = score;
   livesRef.current = lives;
+  streakRef.current = streak;
 
   useEffect(() => {
     loadHighScore();
@@ -113,6 +138,59 @@ export default function Home() {
     setTimeout(() => setShaking(false), 500);
   }, []);
 
+  // ===== HIT EFFECTS =====
+  const spawnParticles = useCallback(() => {
+    const newParticles: Particle[] = [];
+    const count = 12 + Math.min(streakRef.current * 3, 20);
+    for (let i = 0; i < count; i++) {
+      newParticles.push({
+        id: particleIdRef.current++,
+        x: 0,
+        y: 0,
+        angle: (Math.PI * 2 * i) / count + (Math.random() - 0.5) * 0.5,
+        speed: 60 + Math.random() * 120,
+        color: PARTICLE_COLORS[Math.floor(Math.random() * PARTICLE_COLORS.length)],
+        size: 4 + Math.random() * 6,
+      });
+    }
+    setParticles(newParticles);
+    setTimeout(() => setParticles([]), 700);
+  }, []);
+
+  const triggerHitEffects = useCallback(
+    (newStreak: number) => {
+      // Green flash
+      setFlashing(true);
+      setTimeout(() => setFlashing(false), 400);
+
+      // Score bounce
+      setScorePop(true);
+      setTimeout(() => setScorePop(false), 500);
+
+      // Floating "+1" (or "+streak" for combos)
+      const floatText = newStreak >= 3 ? `+${newStreak}` : "+1";
+      const id = floatIdRef.current++;
+      setFloats((prev) => [...prev, { id, text: floatText }]);
+      setTimeout(() => setFloats((prev) => prev.filter((f) => f.id !== id)), 800);
+
+      // Word slam animation
+      setWordSlam(true);
+      setTimeout(() => setWordSlam(false), 350);
+
+      // Particles
+      spawnParticles();
+
+      // Screen pulse on streak >= 3
+      if (newStreak >= 3) {
+        setScreenPulse(true);
+        setTimeout(() => setScreenPulse(false), 600);
+        setShowCombo(true);
+        setTimeout(() => setShowCombo(false), 800);
+      }
+    },
+    [spawnParticles]
+  );
+
   const nextRound = useCallback(
     (newScore: number, delay = 100) => {
       const w = getRandomWord();
@@ -122,11 +200,9 @@ export default function Home() {
       durationRef.current = dur;
 
       setTimeout(() => {
-        // Snap bar to full instantly (no transition)
         setProgress(1);
         startRef.current = Date.now();
 
-        // Start decreasing on next frame
         requestAnimationFrame(() => {
           const tick = () => {
             const elapsed = Date.now() - startRef.current;
@@ -140,9 +216,10 @@ export default function Home() {
         });
 
         timeoutRef.current = setTimeout(() => {
-          // Time ran out — lose a life
           stopTimer();
           setProgress(0);
+          setStreak(0);
+          streakRef.current = 0;
           const curLives = livesRef.current - 1;
           setLives(curLives);
           if (curLives <= 0) {
@@ -164,9 +241,13 @@ export default function Home() {
     setScreen("playing");
     setScore(0);
     setLives(MAX_LIVES);
+    setStreak(0);
     scoreRef.current = 0;
     livesRef.current = MAX_LIVES;
+    streakRef.current = 0;
     setInput("");
+    setParticles([]);
+    setFloats([]);
     nextRound(0);
   }, [nextRound]);
 
@@ -181,11 +262,18 @@ export default function Home() {
 
     if (trimmed === expected) {
       const newScore = scoreRef.current + 1;
+      const newStreak = streakRef.current + 1;
       setScore(newScore);
+      setStreak(newStreak);
       scoreRef.current = newScore;
+      streakRef.current = newStreak;
+
+      triggerHitEffects(newStreak);
       nextRound(newScore);
     } else {
       shake();
+      setStreak(0);
+      streakRef.current = 0;
       const newLives = livesRef.current - 1;
       setLives(newLives);
       livesRef.current = newLives;
@@ -196,7 +284,7 @@ export default function Home() {
         nextRound(scoreRef.current, 300);
       }
     }
-  }, [input, word, stopTimer, nextRound, shake, saveHighScore]);
+  }, [input, word, stopTimer, nextRound, shake, saveHighScore, triggerHitEffects]);
 
   useEffect(() => {
     return () => stopTimer();
@@ -291,15 +379,86 @@ export default function Home() {
   const isTrick = word === TRICK_WORD;
 
   return (
-    <div className="min-h-screen bg-[#1a1d23] flex items-center justify-center">
-      <div className="text-center w-full max-w-2xl mx-auto px-6">
-        {/* Score */}
-        <div className="mb-4">
+    <div
+      className={`min-h-screen bg-[#1a1d23] flex items-center justify-center relative overflow-hidden ${
+        screenPulse ? "animate-screen-pulse" : ""
+      }`}
+    >
+      {/* Green flash overlay */}
+      {flashing && (
+        <div className="absolute inset-0 bg-[#4ade80] animate-flash pointer-events-none z-50" />
+      )}
+
+      {/* Particle burst from center */}
+      {particles.map((p) => (
+        <div
+          key={p.id}
+          className="absolute pointer-events-none z-40 rounded-full"
+          style={{
+            left: "50%",
+            top: "40%",
+            width: p.size,
+            height: p.size,
+            backgroundColor: p.color,
+            animation: `particle 0.6s ease-out forwards`,
+            transform: `translate(${Math.cos(p.angle) * p.speed}px, ${
+              Math.sin(p.angle) * p.speed
+            }px) scale(0)`,
+            transition: "transform 0.6s cubic-bezier(0, 0.7, 0.3, 1), opacity 0.6s ease-out",
+            opacity: 0,
+          }}
+          ref={(el) => {
+            if (el) {
+              requestAnimationFrame(() => {
+                el.style.transform = `translate(${Math.cos(p.angle) * p.speed}px, ${
+                  Math.sin(p.angle) * p.speed
+                }px) scale(1)`;
+                el.style.opacity = "1";
+                setTimeout(() => {
+                  el.style.transform = `translate(${Math.cos(p.angle) * p.speed * 2.5}px, ${
+                    Math.sin(p.angle) * p.speed * 2.5
+                  }px) scale(0)`;
+                  el.style.opacity = "0";
+                }, 50);
+              });
+            }
+          }}
+        />
+      ))}
+
+      <div className="text-center w-full max-w-2xl mx-auto px-6 relative z-10">
+        {/* Score + floating text */}
+        <div className="mb-4 relative inline-block">
           <span className="text-gray-400 text-lg">Score: </span>
-          <span className="text-white text-lg font-bold">{score}</span>
+          <span
+            className={`text-white text-lg font-bold inline-block ${
+              scorePop ? "animate-score-pop" : ""
+            }`}
+          >
+            {score}
+          </span>
+
+          {/* Floating +1 / +streak */}
+          {floats.map((f) => (
+            <span
+              key={f.id}
+              className="absolute -top-2 left-full ml-2 text-[#4ade80] font-bold text-xl animate-float-up pointer-events-none"
+            >
+              {f.text}
+            </span>
+          ))}
         </div>
 
-        {/* Timer Bar — decreases from full to zero */}
+        {/* Streak counter */}
+        {streak >= 3 && (
+          <div className={`mb-2 ${showCombo ? "animate-combo" : ""}`}>
+            <span className="text-[#f5c542] font-bold text-lg">
+              &#x1F525; {streak}x STREAK
+            </span>
+          </div>
+        )}
+
+        {/* Timer Bar */}
         <div className="w-full h-4 bg-gray-700 rounded-full mb-10 overflow-hidden">
           <div
             className="h-full rounded-full"
@@ -315,7 +474,7 @@ export default function Home() {
         <h2
           className={`text-6xl md:text-8xl font-bold mb-8 ${
             isTrick ? "text-[#e85d5d]" : "text-white"
-          }`}
+          } ${wordSlam ? "animate-word-slam" : ""}`}
         >
           {word}
         </h2>
@@ -346,7 +505,9 @@ export default function Home() {
             autoComplete="off"
             autoCapitalize="off"
             spellCheck={false}
-            className="w-full max-w-md mx-auto block bg-[#2a2d35] border-2 border-[#4ade80] text-white text-xl text-center py-4 px-6 rounded-xl outline-none focus:border-[#22c55e] focus:shadow-[0_0_15px_rgba(74,222,128,0.3)] placeholder-gray-500 transition-all"
+            className={`w-full max-w-md mx-auto block bg-[#2a2d35] border-2 border-[#4ade80] text-white text-xl text-center py-4 px-6 rounded-xl outline-none focus:border-[#22c55e] focus:shadow-[0_0_15px_rgba(74,222,128,0.3)] placeholder-gray-500 transition-all ${
+              streak >= 3 ? "streak-glow" : ""
+            }`}
           />
         </div>
 
