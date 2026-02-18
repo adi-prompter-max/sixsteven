@@ -305,7 +305,7 @@ export default function Home() {
         <div className="text-center max-w-lg mx-auto px-6">
           <h1 className="mb-6">
             <span className="text-5xl md:text-6xl font-bold text-white">Type </span>
-            <span className="text-5xl md:text-6xl font-bold text-[#e85d5d] italic">Six</span>
+            <span className="text-5xl md:text-6xl font-bold text-[#e85d5d] italic line-through">Six</span>
             <br />
             <span className="text-5xl md:text-6xl font-bold text-[#4ade80]">Steven</span>
           </h1>
