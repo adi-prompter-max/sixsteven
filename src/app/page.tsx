@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { supabase } from "@/lib/supabase";
+import Link from "next/link";
 
 // All crypto currency words, 4-6 letters only
 const VALID_WORDS = [
@@ -22,9 +23,20 @@ const INITIAL_TIME = 4500;
 const TIME_DECREASE = 200;
 const MIN_TIME = 1200;
 const MAX_LIVES = 3;
-const TRICK_CHANCE = 0.2;
+const TRICK_CHANCE = 0.15;
+const CHAOS_UNLOCK_SCORE = 10;
 
 type GameScreen = "home" | "playing" | "gameover";
+type ChallengeType = "normal" | "trick" | "math" | "math_trick" | "memory" | "backwards" | "missing";
+
+interface Challenge {
+  type: ChallengeType;
+  display: string;         // what to show on screen
+  expected: string;        // correct answer
+  hint: string;            // small instruction text
+  memoryWord?: string;     // for memory: the word to remember
+  color?: string;          // display color override
+}
 
 interface Particle {
   id: number;
@@ -36,9 +48,121 @@ interface Particle {
   size: number;
 }
 
-function getRandomWord() {
-  if (Math.random() < TRICK_CHANCE) return TRICK_WORD;
+// ===== CHALLENGE GENERATORS =====
+
+function pickWord(): string {
   return VALID_WORDS[Math.floor(Math.random() * VALID_WORDS.length)];
+}
+
+function reverseString(s: string): string {
+  return s.split("").reverse().join("");
+}
+
+function generateMathProblem(): { display: string; answer: number } {
+  const ops = [
+    { sym: "+", fn: (a: number, b: number) => a + b },
+    { sym: "-", fn: (a: number, b: number) => a - b },
+    { sym: "x", fn: (a: number, b: number) => a * b },
+  ];
+  const op = ops[Math.floor(Math.random() * ops.length)];
+  let a: number, b: number, result: number;
+
+  if (op.sym === "x") {
+    a = 2 + Math.floor(Math.random() * 10);
+    b = 2 + Math.floor(Math.random() * 10);
+    result = op.fn(a, b);
+  } else if (op.sym === "-") {
+    a = 5 + Math.floor(Math.random() * 45);
+    b = 1 + Math.floor(Math.random() * a);
+    result = op.fn(a, b);
+  } else {
+    a = 1 + Math.floor(Math.random() * 50);
+    b = 1 + Math.floor(Math.random() * 50);
+    result = op.fn(a, b);
+  }
+
+  return { display: `${a} ${op.sym} ${b}`, answer: result };
+}
+
+function generateMathTrickProblem(): { display: string; answer: number } {
+  // Generate a problem that equals 12 (trigger: type "steven")
+  const ways: [number, string, number][] = [
+    [6, "+", 6], [4, "x", 3], [3, "x", 4], [2, "x", 6],
+    [6, "x", 2], [15, "-", 3], [20, "-", 8], [7, "+", 5],
+    [9, "+", 3], [24, "-", 12],
+  ];
+  const [a, sym, b] = ways[Math.floor(Math.random() * ways.length)];
+  return { display: `${a} ${sym} ${b}`, answer: 12 };
+}
+
+function generateMissingLetter(): { display: string; answer: string } {
+  const word = pickWord();
+  const idx = Math.floor(Math.random() * word.length);
+  const missing = word[idx];
+  const display = word.slice(0, idx) + "_" + word.slice(idx + 1);
+  return { display, answer: missing };
+}
+
+function generateChallenge(score: number): Challenge {
+  // Before score 10: only normal + trick
+  if (score < CHAOS_UNLOCK_SCORE) {
+    if (Math.random() < TRICK_CHANCE) {
+      return { type: "trick", display: TRICK_WORD, expected: TRICK_ANSWER, hint: "", color: "#e85d5d" };
+    }
+    const w = pickWord();
+    return { type: "normal", display: w, expected: w, hint: "" };
+  }
+
+  // After score 10: chaos mode — mix in new challenge types
+  // Gradually increase chaos chance: at score 10 = 40%, at score 30+ = 75%
+  const chaosChance = Math.min(0.75, 0.4 + (score - CHAOS_UNLOCK_SCORE) * 0.015);
+  const roll = Math.random();
+
+  if (roll < TRICK_CHANCE) {
+    // Original trick
+    return { type: "trick", display: TRICK_WORD, expected: TRICK_ANSWER, hint: "", color: "#e85d5d" };
+  }
+
+  if (roll < TRICK_CHANCE + chaosChance) {
+    // Pick a chaos challenge
+    const chaosTypes = ["math", "math_trick", "memory", "backwards", "missing"];
+    // Weight math_trick less frequently
+    const weights = [25, 10, 25, 25, 15];
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = Math.random() * total;
+    let chosen = chaosTypes[0];
+    for (let i = 0; i < weights.length; i++) {
+      r -= weights[i];
+      if (r <= 0) { chosen = chaosTypes[i]; break; }
+    }
+
+    switch (chosen) {
+      case "math": {
+        const { display, answer } = generateMathProblem();
+        return { type: "math", display, expected: String(answer), hint: "Solve it!", color: "#a78bfa" };
+      }
+      case "math_trick": {
+        const { display } = generateMathTrickProblem();
+        return { type: "math_trick", display, expected: TRICK_ANSWER, hint: "Solve it!", color: "#e85d5d" };
+      }
+      case "memory": {
+        const w = pickWord();
+        return { type: "memory", display: w, expected: w, hint: "Remember this!", memoryWord: w, color: "#38bdf8" };
+      }
+      case "backwards": {
+        const w = pickWord();
+        return { type: "backwards", display: reverseString(w), expected: w, hint: "Type it forwards!", color: "#fb923c" };
+      }
+      case "missing": {
+        const { display, answer } = generateMissingLetter();
+        return { type: "missing", display, expected: answer, hint: "Type the missing letter!", color: "#f472b6" };
+      }
+    }
+  }
+
+  // Normal word
+  const w = pickWord();
+  return { type: "normal", display: w, expected: w, hint: "" };
 }
 
 function getTimeDuration(score: number) {
@@ -47,9 +171,29 @@ function getTimeDuration(score: number) {
 
 const PARTICLE_COLORS = ["#4ade80", "#22c55e", "#86efac", "#f5c542", "#fbbf24", "#a3e635"];
 
+const CHALLENGE_LABELS: Record<ChallengeType, string> = {
+  normal: "",
+  trick: "",
+  math: "MATH",
+  math_trick: "MATH",
+  memory: "MEMORY",
+  backwards: "BACKWARDS",
+  missing: "MISSING LETTER",
+};
+
+const CHALLENGE_BADGE_COLORS: Record<ChallengeType, string> = {
+  normal: "",
+  trick: "",
+  math: "#a78bfa",
+  math_trick: "#e85d5d",
+  memory: "#38bdf8",
+  backwards: "#fb923c",
+  missing: "#f472b6",
+};
+
 export default function Home() {
   const [screen, setScreen] = useState<GameScreen>("home");
-  const [word, setWord] = useState("");
+  const [challenge, setChallenge] = useState<Challenge>({ type: "normal", display: "", expected: "", hint: "" });
   const [input, setInput] = useState("");
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(MAX_LIVES);
@@ -66,9 +210,17 @@ export default function Home() {
   const [streak, setStreak] = useState(0);
   const [screenPulse, setScreenPulse] = useState(false);
   const [showCombo, setShowCombo] = useState(false);
+  const [playerName, setPlayerName] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  // Memory challenge states
+  const [memoryHidden, setMemoryHidden] = useState(false);
+  const [showNewMode, setShowNewMode] = useState(false);
+  const [chaosUnlocked, setChaosUnlocked] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const memoryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rafRef = useRef<number | null>(null);
   const startRef = useRef(0);
   const durationRef = useRef(INITIAL_TIME);
@@ -77,10 +229,12 @@ export default function Home() {
   const streakRef = useRef(0);
   const floatIdRef = useRef(0);
   const particleIdRef = useRef(0);
+  const challengeRef = useRef<Challenge>(challenge);
 
   scoreRef.current = score;
   livesRef.current = lives;
   streakRef.current = streak;
+  challengeRef.current = challenge;
 
   useEffect(() => {
     loadHighScore();
@@ -127,6 +281,10 @@ export default function Home() {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
+    if (memoryTimeoutRef.current) {
+      clearTimeout(memoryTimeoutRef.current);
+      memoryTimeoutRef.current = null;
+    }
     if (rafRef.current) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -159,28 +317,22 @@ export default function Home() {
 
   const triggerHitEffects = useCallback(
     (newStreak: number) => {
-      // Green flash
       setFlashing(true);
       setTimeout(() => setFlashing(false), 400);
 
-      // Score bounce
       setScorePop(true);
       setTimeout(() => setScorePop(false), 500);
 
-      // Floating "+1" (or "+streak" for combos)
       const floatText = newStreak >= 3 ? `+${newStreak}` : "+1";
       const id = floatIdRef.current++;
       setFloats((prev) => [...prev, { id, text: floatText }]);
       setTimeout(() => setFloats((prev) => prev.filter((f) => f.id !== id)), 800);
 
-      // Word slam animation
       setWordSlam(true);
       setTimeout(() => setWordSlam(false), 350);
 
-      // Particles
       spawnParticles();
 
-      // Screen pulse on streak >= 3
       if (newStreak >= 3) {
         setScreenPulse(true);
         setTimeout(() => setScreenPulse(false), 600);
@@ -193,15 +345,37 @@ export default function Home() {
 
   const nextRound = useCallback(
     (newScore: number, delay = 100) => {
-      const w = getRandomWord();
-      setWord(w);
+      // Show chaos unlock banner at exactly score 10
+      if (newScore === CHAOS_UNLOCK_SCORE && !chaosUnlocked) {
+        setChaosUnlocked(true);
+        setShowNewMode(true);
+        setTimeout(() => setShowNewMode(false), 2500);
+      }
+
+      const ch = generateChallenge(newScore);
+      setChallenge(ch);
+      challengeRef.current = ch;
       setInput("");
-      const dur = getTimeDuration(newScore);
+      setMemoryHidden(false);
+
+      // Memory challenges get extra time
+      const baseDur = getTimeDuration(newScore);
+      const dur = ch.type === "memory" ? baseDur + 1500 : baseDur;
       durationRef.current = dur;
+
+      const startDelay = ch.type === "memory" ? delay + 100 : delay;
 
       setTimeout(() => {
         setProgress(1);
         startRef.current = Date.now();
+
+        // Memory: show word for a flash then hide it
+        if (ch.type === "memory") {
+          const flashTime = Math.max(800, 1500 - Math.floor(newScore / 5) * 100);
+          memoryTimeoutRef.current = setTimeout(() => {
+            setMemoryHidden(true);
+          }, flashTime);
+        }
 
         requestAnimationFrame(() => {
           const tick = () => {
@@ -232,10 +406,45 @@ export default function Home() {
         }, dur);
 
         inputRef.current?.focus();
-      }, delay);
+      }, startDelay);
     },
-    [stopTimer, shake, saveHighScore]
+    [stopTimer, shake, saveHighScore, chaosUnlocked]
   );
+
+  const submitToLeaderboard = useCallback(async (name: string, finalScore: number) => {
+    const trimmed = name.trim();
+    if (!trimmed || finalScore <= 0) return;
+    try {
+      const raw = localStorage.getItem("typeSixStevenLeaderboard");
+      const entries: { name: string; score: number }[] = raw ? JSON.parse(raw) : [];
+      const existing = entries.find((e) => e.name.toLowerCase() === trimmed.toLowerCase());
+      if (existing) {
+        existing.score = Math.max(existing.score, finalScore);
+        existing.name = trimmed;
+      } else {
+        entries.push({ name: trimmed, score: finalScore });
+      }
+      localStorage.setItem("typeSixStevenLeaderboard", JSON.stringify(entries));
+    } catch { /* ignore */ }
+    try {
+      if (supabase) {
+        const { data } = await supabase
+          .from("leaderboard")
+          .select("id, score")
+          .ilike("name", trimmed)
+          .limit(1)
+          .single();
+        if (data && data.score >= finalScore) {
+          // skip
+        } else if (data) {
+          await supabase.from("leaderboard").update({ score: finalScore, name: trimmed }).eq("id", data.id);
+        } else {
+          await supabase.from("leaderboard").insert({ name: trimmed, score: finalScore });
+        }
+      }
+    } catch { /* localStorage fallback already saved */ }
+    setSubmitted(true);
+  }, []);
 
   const startGame = useCallback(() => {
     setScreen("playing");
@@ -246,8 +455,13 @@ export default function Home() {
     livesRef.current = MAX_LIVES;
     streakRef.current = 0;
     setInput("");
+    setPlayerName("");
+    setSubmitted(false);
     setParticles([]);
     setFloats([]);
+    setMemoryHidden(false);
+    setChaosUnlocked(false);
+    setShowNewMode(false);
     nextRound(0);
   }, [nextRound]);
 
@@ -255,8 +469,8 @@ export default function Home() {
     const trimmed = input.trim().toLowerCase();
     if (!trimmed) return;
 
-    const isTrick = word === TRICK_WORD;
-    const expected = isTrick ? TRICK_ANSWER : word.toLowerCase();
+    const ch = challengeRef.current;
+    const expected = ch.expected.toLowerCase();
 
     stopTimer();
 
@@ -284,7 +498,7 @@ export default function Home() {
         nextRound(scoreRef.current, 300);
       }
     }
-  }, [input, word, stopTimer, nextRound, shake, saveHighScore, triggerHitEffects]);
+  }, [input, stopTimer, nextRound, shake, saveHighScore, triggerHitEffects]);
 
   useEffect(() => {
     return () => stopTimer();
@@ -316,10 +530,21 @@ export default function Home() {
             <span className="text-[#4ade80] font-bold">&quot;steven&quot;</span> instead!
           </p>
 
-          <div className="text-gray-400 text-base space-y-1 mb-8">
+          <div className="text-gray-400 text-base space-y-1 mb-4">
             <p>&#x23F1;&#xFE0F; Timer gets faster each word</p>
             <p>&#x2764;&#xFE0F; 3 lives &mdash; don&apos;t lose them all</p>
             <p>&#x26A1; Watch out for the trick!</p>
+          </div>
+
+          <div className="bg-[#2a2d35] rounded-xl p-4 mb-8 border border-[#3a3d45]">
+            <p className="text-[#f5c542] font-bold text-sm mb-2 uppercase tracking-wider">After Score 10: Chaos Mode</p>
+            <div className="text-gray-400 text-sm space-y-1">
+              <p><span className="text-[#a78bfa] font-semibold">MATH</span> &mdash; Solve equations fast</p>
+              <p><span className="text-[#38bdf8] font-semibold">MEMORY</span> &mdash; Word flashes, then vanishes</p>
+              <p><span className="text-[#fb923c] font-semibold">BACKWARDS</span> &mdash; Read it in reverse</p>
+              <p><span className="text-[#f472b6] font-semibold">MISSING</span> &mdash; Fill the blank letter</p>
+              <p><span className="text-[#e85d5d] font-semibold">MATH TRICK</span> &mdash; Answer = 12? Type steven!</p>
+            </div>
           </div>
 
           {highScore > 0 && (
@@ -334,6 +559,15 @@ export default function Home() {
           >
             Start Game
           </button>
+
+          <div className="mt-6">
+            <Link
+              href="/leaderboard"
+              className="text-[#4ade80] hover:text-[#22c55e] font-semibold text-lg transition-colors underline underline-offset-4"
+            >
+              View Leaderboard
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -361,22 +595,68 @@ export default function Home() {
           )}
 
           {highScore > 0 && (
-            <p className="text-gray-400 text-lg mb-8">&#x1F3C6; Best: {Math.max(highScore, score)}</p>
+            <p className="text-gray-400 text-lg mb-6">&#x1F3C6; Best: {Math.max(highScore, score)}</p>
           )}
 
-          <button
-            onClick={startGame}
-            className="bg-[#4ade80] hover:bg-[#22c55e] text-[#1a1d23] font-bold text-xl px-16 py-4 rounded-xl transition-colors cursor-pointer"
-          >
-            Play Again
-          </button>
+          {!submitted ? (
+            <div className="mb-6">
+              <p className="text-gray-400 text-sm mb-2">Enter your name for the leaderboard</p>
+              <div className="flex gap-3 justify-center max-w-sm mx-auto">
+                <input
+                  type="text"
+                  value={playerName}
+                  onChange={(e) => setPlayerName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && playerName.trim()) submitToLeaderboard(playerName, score);
+                  }}
+                  placeholder="Your name"
+                  maxLength={20}
+                  autoComplete="off"
+                  className="flex-1 bg-[#2a2d35] border-2 border-gray-600 text-white text-lg text-center py-3 px-4 rounded-xl outline-none focus:border-[#4ade80] placeholder-gray-500 transition-colors"
+                />
+                <button
+                  onClick={() => submitToLeaderboard(playerName, score)}
+                  disabled={!playerName.trim()}
+                  className="bg-[#f5c542] hover:bg-[#d4a82f] disabled:opacity-40 disabled:cursor-not-allowed text-[#1a1d23] font-bold text-lg px-6 py-3 rounded-xl transition-colors cursor-pointer"
+                >
+                  Submit
+                </button>
+              </div>
+            </div>
+          ) : (
+            <p className="text-[#4ade80] font-semibold text-lg mb-6">Score submitted!</p>
+          )}
+
+          <div className="flex flex-col items-center gap-4">
+            <button
+              onClick={startGame}
+              className="bg-[#4ade80] hover:bg-[#22c55e] text-[#1a1d23] font-bold text-xl px-16 py-4 rounded-xl transition-colors cursor-pointer"
+            >
+              Play Again
+            </button>
+            <Link
+              href="/leaderboard"
+              className="text-[#4ade80] hover:text-[#22c55e] font-semibold text-lg transition-colors underline underline-offset-4"
+            >
+              View Leaderboard
+            </Link>
+          </div>
         </div>
       </div>
     );
   }
 
   // =================== PLAYING ===================
-  const isTrick = word === TRICK_WORD;
+  const isTrick = challenge.type === "trick" || challenge.type === "math_trick";
+  const label = CHALLENGE_LABELS[challenge.type];
+  const badgeColor = CHALLENGE_BADGE_COLORS[challenge.type];
+  const displayColor = challenge.color || (isTrick ? "#e85d5d" : "#ffffff");
+
+  // What to show for the main word area
+  let displayContent = challenge.display;
+  if (challenge.type === "memory" && memoryHidden) {
+    displayContent = "? ? ?";
+  }
 
   return (
     <div
@@ -387,6 +667,16 @@ export default function Home() {
       {/* Green flash overlay */}
       {flashing && (
         <div className="absolute inset-0 bg-[#4ade80] animate-flash pointer-events-none z-50" />
+      )}
+
+      {/* Chaos Mode unlock banner */}
+      {showNewMode && (
+        <div className="absolute top-0 left-0 right-0 z-50 flex justify-center pointer-events-none">
+          <div className="animate-chaos-banner bg-gradient-to-r from-[#a78bfa] via-[#f472b6] to-[#fb923c] text-white font-extrabold text-xl md:text-2xl px-8 py-4 rounded-b-2xl shadow-2xl text-center">
+            CHAOS MODE UNLOCKED!<br />
+            <span className="text-sm font-normal opacity-90">Math, Memory, Backwards &amp; more incoming...</span>
+          </div>
+        </div>
       )}
 
       {/* Particle burst from center */}
@@ -458,8 +748,20 @@ export default function Home() {
           </div>
         )}
 
+        {/* Challenge type badge */}
+        {label && (
+          <div className="mb-3 animate-badge-pop">
+            <span
+              className="text-xs font-extrabold uppercase tracking-widest px-4 py-1.5 rounded-full"
+              style={{ backgroundColor: badgeColor, color: "#1a1d23" }}
+            >
+              {label}
+            </span>
+          </div>
+        )}
+
         {/* Timer Bar */}
-        <div className="w-full h-4 bg-gray-700 rounded-full mb-10 overflow-hidden">
+        <div className="w-full h-4 bg-gray-700 rounded-full mb-8 overflow-hidden">
           <div
             className="h-full rounded-full"
             style={{
@@ -470,13 +772,24 @@ export default function Home() {
           />
         </div>
 
-        {/* Word */}
+        {/* Hint text */}
+        {challenge.hint && (
+          <p
+            className="text-sm font-semibold mb-2 animate-fade-in"
+            style={{ color: challenge.color || "#9ca3af" }}
+          >
+            {challenge.hint}
+          </p>
+        )}
+
+        {/* Word / Challenge display */}
         <h2
-          className={`text-6xl md:text-8xl font-bold mb-8 ${
-            isTrick ? "text-[#e85d5d]" : "text-white"
-          } ${wordSlam ? "animate-word-slam" : ""}`}
+          className={`font-bold mb-8 ${wordSlam ? "animate-word-slam" : ""} ${
+            challenge.type === "memory" && memoryHidden ? "animate-memory-fade text-gray-600" : ""
+          } ${challenge.type === "math" || challenge.type === "math_trick" ? "text-5xl md:text-7xl" : "text-6xl md:text-8xl"}`}
+          style={{ color: challenge.type === "memory" && memoryHidden ? "#4b5563" : displayColor }}
         >
-          {word}
+          {displayContent}
         </h2>
 
         {/* Lives */}
@@ -501,7 +814,13 @@ export default function Home() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="Type here..."
+            placeholder={
+              challenge.type === "missing" ? "Type the missing letter..."
+              : challenge.type === "math" || challenge.type === "math_trick" ? "Type the answer..."
+              : challenge.type === "memory" && memoryHidden ? "What was the word?"
+              : challenge.type === "backwards" ? "Type it forwards..."
+              : "Type here..."
+            }
             autoComplete="off"
             autoCapitalize="off"
             spellCheck={false}
