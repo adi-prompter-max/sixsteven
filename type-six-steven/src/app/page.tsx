@@ -20,11 +20,15 @@ const VALID_WORDS = [
 const TRICK_WORD = "six";
 const TRICK_ANSWER = "steven";
 const INITIAL_TIME = 4500;
-const TIME_DECREASE = 200;
-const MIN_TIME = 1200;
+const TIME_DECREASE = 150;
+const MIN_TIME = 1500;
 const MAX_LIVES = 3;
 const TRICK_CHANCE = 0.15;
-const CHAOS_UNLOCK_SCORE = 10;
+
+// Progressive unlock thresholds
+const PHASE_1_SCORE = 15; // Easy math (addition only) + backwards
+const PHASE_2_SCORE = 20; // + memory, missing letter, harder math (subtraction)
+const PHASE_3_SCORE = 28; // + math trick, multiplication — full chaos
 
 type GameScreen = "home" | "playing" | "gameover";
 type ChallengeType = "normal" | "trick" | "math" | "math_trick" | "memory" | "backwards" | "missing";
@@ -58,30 +62,47 @@ function reverseString(s: string): string {
   return s.split("").reverse().join("");
 }
 
-function generateMathProblem(): { display: string; answer: number } {
+function generateMathProblem(phase: 1 | 2 | 3): { display: string; answer: number } {
+  if (phase === 1) {
+    // Addition only, small numbers
+    const a = 2 + Math.floor(Math.random() * 20);
+    const b = 2 + Math.floor(Math.random() * 20);
+    return { display: `${a} + ${b}`, answer: a + b };
+  }
+
+  if (phase === 2) {
+    // Addition + subtraction
+    if (Math.random() < 0.5) {
+      const a = 5 + Math.floor(Math.random() * 30);
+      const b = 2 + Math.floor(Math.random() * 20);
+      return { display: `${a} + ${b}`, answer: a + b };
+    }
+    const a = 10 + Math.floor(Math.random() * 40);
+    const b = 1 + Math.floor(Math.random() * a);
+    return { display: `${a} - ${b}`, answer: a - b };
+  }
+
+  // Phase 3: all ops including multiplication
   const ops = [
     { sym: "+", fn: (a: number, b: number) => a + b },
     { sym: "-", fn: (a: number, b: number) => a - b },
     { sym: "x", fn: (a: number, b: number) => a * b },
   ];
   const op = ops[Math.floor(Math.random() * ops.length)];
-  let a: number, b: number, result: number;
+  let a: number, b: number;
 
   if (op.sym === "x") {
-    a = 2 + Math.floor(Math.random() * 10);
-    b = 2 + Math.floor(Math.random() * 10);
-    result = op.fn(a, b);
+    a = 2 + Math.floor(Math.random() * 9);
+    b = 2 + Math.floor(Math.random() * 9);
   } else if (op.sym === "-") {
-    a = 5 + Math.floor(Math.random() * 45);
+    a = 10 + Math.floor(Math.random() * 40);
     b = 1 + Math.floor(Math.random() * a);
-    result = op.fn(a, b);
   } else {
-    a = 1 + Math.floor(Math.random() * 50);
-    b = 1 + Math.floor(Math.random() * 50);
-    result = op.fn(a, b);
+    a = 5 + Math.floor(Math.random() * 45);
+    b = 5 + Math.floor(Math.random() * 45);
   }
 
-  return { display: `${a} ${op.sym} ${b}`, answer: result };
+  return { display: `${a} ${op.sym} ${b}`, answer: op.fn(a, b) };
 }
 
 function generateMathTrickProblem(): { display: string; answer: number } {
@@ -104,63 +125,96 @@ function generateMissingLetter(): { display: string; answer: string } {
 }
 
 function generateChallenge(score: number): Challenge {
-  // Before score 10: only normal + trick
-  if (score < CHAOS_UNLOCK_SCORE) {
-    if (Math.random() < TRICK_CHANCE) {
-      return { type: "trick", display: TRICK_WORD, expected: TRICK_ANSWER, hint: "", color: "#e85d5d" };
-    }
+  // Always a chance for the original "six" trick
+  if (Math.random() < TRICK_CHANCE) {
+    return { type: "trick", display: TRICK_WORD, expected: TRICK_ANSWER, hint: "", color: "#e85d5d" };
+  }
+
+  // Before phase 1: only normal words
+  if (score < PHASE_1_SCORE) {
     const w = pickWord();
     return { type: "normal", display: w, expected: w, hint: "" };
   }
 
-  // After score 10: chaos mode — mix in new challenge types
-  // Gradually increase chaos chance: at score 10 = 40%, at score 30+ = 75%
-  const chaosChance = Math.min(0.75, 0.4 + (score - CHAOS_UNLOCK_SCORE) * 0.015);
-  const roll = Math.random();
-
-  if (roll < TRICK_CHANCE) {
-    // Original trick
-    return { type: "trick", display: TRICK_WORD, expected: TRICK_ANSWER, hint: "", color: "#e85d5d" };
+  // Chaos chance ramps up gently within each phase
+  let chaosChance: number;
+  if (score < PHASE_2_SCORE) {
+    // Phase 1 (15-19): 25% -> 35% chaos
+    chaosChance = 0.25 + (score - PHASE_1_SCORE) * 0.02;
+  } else if (score < PHASE_3_SCORE) {
+    // Phase 2 (20-27): 35% -> 50% chaos
+    chaosChance = 0.35 + (score - PHASE_2_SCORE) * 0.02;
+  } else {
+    // Phase 3 (28+): 50% -> 65% chaos (caps at ~score 43)
+    chaosChance = Math.min(0.65, 0.50 + (score - PHASE_3_SCORE) * 0.01);
   }
 
-  if (roll < TRICK_CHANCE + chaosChance) {
-    // Pick a chaos challenge
-    const chaosTypes = ["math", "math_trick", "memory", "backwards", "missing"];
-    // Weight math_trick less frequently
-    const weights = [25, 10, 25, 25, 15];
-    const total = weights.reduce((a, b) => a + b, 0);
-    let r = Math.random() * total;
-    let chosen = chaosTypes[0];
-    for (let i = 0; i < weights.length; i++) {
-      r -= weights[i];
-      if (r <= 0) { chosen = chaosTypes[i]; break; }
-    }
+  if (Math.random() >= chaosChance) {
+    const w = pickWord();
+    return { type: "normal", display: w, expected: w, hint: "" };
+  }
 
-    switch (chosen) {
-      case "math": {
-        const { display, answer } = generateMathProblem();
-        return { type: "math", display, expected: String(answer), hint: "Solve it!", color: "#a78bfa" };
-      }
-      case "math_trick": {
-        const { display } = generateMathTrickProblem();
-        return { type: "math_trick", display, expected: TRICK_ANSWER, hint: "Solve it!", color: "#e85d5d" };
-      }
-      case "memory": {
-        const w = pickWord();
-        return { type: "memory", display: w, expected: w, hint: "Remember this!", memoryWord: w, color: "#38bdf8" };
-      }
-      case "backwards": {
-        const w = pickWord();
-        return { type: "backwards", display: reverseString(w), expected: w, hint: "Type it forwards!", color: "#fb923c" };
-      }
-      case "missing": {
-        const { display, answer } = generateMissingLetter();
-        return { type: "missing", display, expected: answer, hint: "Type the missing letter!", color: "#f472b6" };
-      }
+  // Pick challenge based on current phase
+  let pool: { type: string; weight: number }[];
+
+  if (score < PHASE_2_SCORE) {
+    // Phase 1: easy math (addition) + backwards only
+    pool = [
+      { type: "math", weight: 50 },
+      { type: "backwards", weight: 50 },
+    ];
+  } else if (score < PHASE_3_SCORE) {
+    // Phase 2: + memory, missing letter, harder math
+    pool = [
+      { type: "math", weight: 30 },
+      { type: "backwards", weight: 25 },
+      { type: "memory", weight: 25 },
+      { type: "missing", weight: 20 },
+    ];
+  } else {
+    // Phase 3: everything including math trick
+    pool = [
+      { type: "math", weight: 25 },
+      { type: "backwards", weight: 20 },
+      { type: "memory", weight: 20 },
+      { type: "missing", weight: 15 },
+      { type: "math_trick", weight: 20 },
+    ];
+  }
+
+  const total = pool.reduce((a, b) => a + b.weight, 0);
+  let r = Math.random() * total;
+  let chosen = pool[0].type;
+  for (const p of pool) {
+    r -= p.weight;
+    if (r <= 0) { chosen = p.type; break; }
+  }
+
+  const mathPhase: 1 | 2 | 3 = score < PHASE_2_SCORE ? 1 : score < PHASE_3_SCORE ? 2 : 3;
+
+  switch (chosen) {
+    case "math": {
+      const { display, answer } = generateMathProblem(mathPhase);
+      return { type: "math", display, expected: String(answer), hint: "Solve it!", color: "#a78bfa" };
+    }
+    case "math_trick": {
+      const { display } = generateMathTrickProblem();
+      return { type: "math_trick", display, expected: TRICK_ANSWER, hint: "Solve it!", color: "#e85d5d" };
+    }
+    case "memory": {
+      const w = pickWord();
+      return { type: "memory", display: w, expected: w, hint: "Remember this!", memoryWord: w, color: "#38bdf8" };
+    }
+    case "backwards": {
+      const w = pickWord();
+      return { type: "backwards", display: reverseString(w), expected: w, hint: "Type it forwards!", color: "#fb923c" };
+    }
+    case "missing": {
+      const { display, answer } = generateMissingLetter();
+      return { type: "missing", display, expected: answer, hint: "Type the missing letter!", color: "#f472b6" };
     }
   }
 
-  // Normal word
   const w = pickWord();
   return { type: "normal", display: w, expected: w, hint: "" };
 }
@@ -217,6 +271,7 @@ export default function Home() {
   const [memoryHidden, setMemoryHidden] = useState(false);
   const [showNewMode, setShowNewMode] = useState(false);
   const [chaosUnlocked, setChaosUnlocked] = useState(false);
+  const [bannerText, setBannerText] = useState("");
 
   const inputRef = useRef<HTMLInputElement>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -345,11 +400,18 @@ export default function Home() {
 
   const nextRound = useCallback(
     (newScore: number, delay = 100) => {
-      // Show chaos unlock banner at exactly score 10
-      if (newScore === CHAOS_UNLOCK_SCORE && !chaosUnlocked) {
-        setChaosUnlocked(true);
-        setShowNewMode(true);
-        setTimeout(() => setShowNewMode(false), 2500);
+      // Show unlock banners at phase transitions
+      if (newScore === PHASE_1_SCORE || newScore === PHASE_2_SCORE || newScore === PHASE_3_SCORE) {
+        if (!chaosUnlocked || newScore > PHASE_1_SCORE) {
+          setChaosUnlocked(true);
+          setShowNewMode(true);
+          setBannerText(
+            newScore === PHASE_1_SCORE ? "CHALLENGES UNLOCKED!\nMath & Backwards incoming..."
+            : newScore === PHASE_2_SCORE ? "PHASE 2!\nMemory & Missing Letter added..."
+            : "FULL CHAOS!\nMath Trick & Multiplication unleashed..."
+          );
+          setTimeout(() => setShowNewMode(false), 2500);
+        }
       }
 
       const ch = generateChallenge(newScore);
@@ -462,6 +524,7 @@ export default function Home() {
     setMemoryHidden(false);
     setChaosUnlocked(false);
     setShowNewMode(false);
+    setBannerText("");
     nextRound(0);
   }, [nextRound]);
 
@@ -536,14 +599,24 @@ export default function Home() {
             <p>&#x26A1; Watch out for the trick!</p>
           </div>
 
-          <div className="bg-[#2a2d35] rounded-xl p-4 mb-8 border border-[#3a3d45]">
-            <p className="text-[#f5c542] font-bold text-sm mb-2 uppercase tracking-wider">After Score 10: Chaos Mode</p>
-            <div className="text-gray-400 text-sm space-y-1">
-              <p><span className="text-[#a78bfa] font-semibold">MATH</span> &mdash; Solve equations fast</p>
-              <p><span className="text-[#38bdf8] font-semibold">MEMORY</span> &mdash; Word flashes, then vanishes</p>
-              <p><span className="text-[#fb923c] font-semibold">BACKWARDS</span> &mdash; Read it in reverse</p>
-              <p><span className="text-[#f472b6] font-semibold">MISSING</span> &mdash; Fill the blank letter</p>
-              <p><span className="text-[#e85d5d] font-semibold">MATH TRICK</span> &mdash; Answer = 12? Type steven!</p>
+          <div className="bg-[#2a2d35] rounded-xl p-4 mb-8 border border-[#3a3d45] text-left">
+            <p className="text-[#f5c542] font-bold text-sm mb-3 uppercase tracking-wider text-center">Challenges Unlock as You Go</p>
+            <div className="text-gray-400 text-sm space-y-2">
+              <div>
+                <p className="text-gray-300 font-semibold text-xs uppercase tracking-wide mb-1">Level 15</p>
+                <p><span className="text-[#a78bfa] font-semibold">MATH</span> &mdash; Quick addition</p>
+                <p><span className="text-[#fb923c] font-semibold">BACKWARDS</span> &mdash; Read it in reverse</p>
+              </div>
+              <div>
+                <p className="text-gray-300 font-semibold text-xs uppercase tracking-wide mb-1">Level 20</p>
+                <p><span className="text-[#38bdf8] font-semibold">MEMORY</span> &mdash; Word flashes, then vanishes</p>
+                <p><span className="text-[#f472b6] font-semibold">MISSING</span> &mdash; Fill the blank letter</p>
+              </div>
+              <div>
+                <p className="text-gray-300 font-semibold text-xs uppercase tracking-wide mb-1">Level 28 &mdash; Full Chaos</p>
+                <p><span className="text-[#e85d5d] font-semibold">MATH TRICK</span> &mdash; Answer = 12? Type steven!</p>
+                <p className="text-gray-500 text-xs">+ multiplication &amp; harder equations</p>
+              </div>
             </div>
           </div>
 
@@ -672,9 +745,10 @@ export default function Home() {
       {/* Chaos Mode unlock banner */}
       {showNewMode && (
         <div className="absolute top-0 left-0 right-0 z-50 flex justify-center pointer-events-none">
-          <div className="animate-chaos-banner bg-gradient-to-r from-[#a78bfa] via-[#f472b6] to-[#fb923c] text-white font-extrabold text-xl md:text-2xl px-8 py-4 rounded-b-2xl shadow-2xl text-center">
-            CHAOS MODE UNLOCKED!<br />
-            <span className="text-sm font-normal opacity-90">Math, Memory, Backwards &amp; more incoming...</span>
+          <div className="animate-chaos-banner bg-gradient-to-r from-[#a78bfa] via-[#f472b6] to-[#fb923c] text-white font-extrabold text-xl md:text-2xl px-8 py-4 rounded-b-2xl shadow-2xl text-center whitespace-pre-line">
+            {bannerText.split("\n").map((line, i) =>
+              i === 0 ? <span key={i}>{line}</span> : <span key={i} className="block text-sm font-normal opacity-90">{line}</span>
+            )}
           </div>
         </div>
       )}
